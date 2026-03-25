@@ -9,137 +9,204 @@
 
 ## Link Youtube (Unlisted)
 Link ditaruh di bawah ini
-```
 
-```
+---
+
+## Deskripsi Singkat
+
+Program ini adalah **TCP Chat Server dengan File Transfer** yang diimplementasikan menggunakan 4 pendekatan berbeda:
+- **Synchronous** - Blocking, satu client setiap waktu
+- **Select** - I/O multiplexing, cross-platform
+- **Poll** - I/O multiplexing, Linux-optimized
+- **Threading** - Satu thread per client
+
+Plus satu klien terminal yang bisa terhubung ke salah satu server.
+
+---
 
 ## Penjelasan Program
 
-Program ini merupakan sistem **TCP Chat Server dengan File Transfer** yang dibuat dengan Python. Terdapat satu klien dan lima varian server yang menunjukkan berbagai teknik penanganan koneksi klien multipel.
+Program ini merupakan sistem **TCP Chat Server dengan File Transfer** yang diimplementasikan dalam Python. Terdapat satu klien dan empat varian server dengan teknik penanganan koneksi berbeda.
 
 ### 1. **client.py** - Terminal Chat Client
 
 Klien yang terhubung ke server untuk melakukan komunikasi chat dan transfer file.
 
-**Fitur Utama:**
-- Koneksi TCP ke server (default: `127.0.0.1:5003`)
-- **Command Interaktif:**
-  - `/list` - Menampilkan daftar file yang tersedia di server
-  - `/upload <filename>` - Mengunggah file lokal ke server
-  - `/download <filename>` - Mengunduh file dari server
-  - Pesan biasa - Dikirim sebagai broadcast ke semua klien
-- **Threading:** Menggunakan dua thread:
-  - Thread utama: Menangani input dari user (`stdin`)
-  - Thread background (`receive_loop`): Menerima pesan dan file dari server secara real-time
-- **Transfer File:**
-  - File diunduh ke folder `downloads/`
-  - Menggunakan header `FILE <name> <size>` untuk menandai awal transfer file
-  - Dukungan file besar dengan buffer chunk-based
+**Fitur:**
+- Menampilkan prompt `>` untuk input user
+- **Commands:**
+  - `/list` - Lihat file di server
+  - `/upload <filename>` - Upload file lokal ke server
+  - `/download <filename>` - Download file dari server
+  - Chat biasa dikirim ke semua client
+- **Threading:** Dua thread untuk concurrent I/O
+  - Thread utama: handle user input
+  - Thread background: receive messages/files dari server
+- **File transfer:**
+  - Download ke folder `downloads/`
+  - Protocol: Server kirim header `FILE <name> <size>\n` lalu raw bytes
+  - Klien parse header dan terima data biner
 
-**Mekanisme:**
-- State management untuk upload/download dengan lock
-- Parsing protokol kustom untuk membedakan pesan teks dan data biner
-- Error handling untuk koneksi terputus
+**Cara kerja:**
+```python
+# Thread background menerima data
+def receive_loop(sock):
+    while not stop_event.is_set():
+        data = sock.recv(BUFFER_SIZE)
+        
+        if download_state['active']:
+            # Sedang download: tulis ke file
+            write chunk to file
+        else:
+            # Normal text mode: print message atau parse FILE header
+            if line starts with 'FILE':
+                parse header, open output file
+                set download_state['active'] = True
+```
 
 ---
 
 ### 2. **server-sync.py** - Synchronous Server (Port 5000)
 
-Server TCP paling sederhana yang menangani satu klien pada satu waktu secara **sinkron/blocking**.
+Server paling sederhana yang menangani **satu client setiap waktu secara blocking**.
 
-**Karakteristik:**
-- **Sinkron/Blocking:** Menerima satu koneksi, menyelesaikan sepenuhnya, kemudian menerima koneksi berikutnya
-- **Keterbatasan:** Jika satu klien tidak memberikan input, klien lain harus menunggu
-- **Cocok untuk:** Demonstrasi konsep dasar, aplikasi dengan volume klien rendah
+**Cara kerja:**
+- `accept()` menunggu sampai ada client yang connect
+- Proses client tersebut sampai disconnect
+- Baru menerima client berikutnya
+- **Keterbatasan:** Jika client 1 idle, client 2 harus menunggu di queue accept()
 
-**Operasi Utama:**
-- `handle_client()`: Loop blocking untuk satu klien
-- `broadcast()`: Mengirim pesan ke semua klien (dilakukan secara sekuensial)
-- `send_file()` dan `receive_file()`: Transfer file point-to-point
+**Implementasi:**
+```python
+while True:
+    conn, addr = server.accept()
+    handle_client(conn, addr)  # Blocking sampai client disconnect
+```
 
-**Protocol:**
-- Chat: plaintext + newline
-- Upload: `/upload <nama> <ukuran>` → klien mengirim raw bytes
-- Download: `/download <nama>` → server mengirim header `FILE` + raw bytes
-- Broadcast: Pesan dari klien dikirim ke semua klien lain dengan timestamp
+**Operasi:**
+- `/list` - List files dari `server_files/`
+- `/upload <name> <size>` - Receive file from client
+- `/download <name>` - Send file to client
+- Chat message - Broadcast ke semua client yang terhubung
+
+**Keuntungan:** Sangat sederhana, cocok untuk demo/pembelajaran
 
 ---
 
-### 3. **server-select.py** - Select-based Multiplexing Server (Port 5001)
+### 3. **server-select.py** - Select-based Server (Port 5001)
 
-Server yang menggunakan **`select.select()`** untuk I/O multiplexing cross-platform.
+Server yang menggunakan **`select()`** untuk menangani multiple clients dalam single thread.
 
-**Karakteristik:**
-- **Non-blocking I/O:** Dapat menangani banyak klien secara bersamaan tanpa thread
-- **select():** Memantau readable/exceptional sockets, menunggu event dengan timeout 1 detik
-- **Cocok untuk:** Aplikasi dengan ratusan koneksi, cross-platform (Windows, Linux, macOS)
+**Cara kerja:**
+- `select()` memantau semua client sockets sekaligus
+- Return hanya sockets yang siap read/write
+- Process mereka secara sequential
+- Loop terus untuk check sockets baru
 
-**Mekanisme:**
-- `read_sockets`: List socket yang dimonitor
-- State per socket: `{'addr': ..., 'buffer': str, 'upload': dict}`
-- Pipeline data: Text commands → upload binary → continue
-- Graceful disconnect handling
+**Implementasi:**
+```python
+read_sockets = [server_sock]
+
+while True:
+    readable, _, exceptional = select.select(read_sockets, [], read_sockets, 1.0)
+    
+    for sock in readable:
+        if sock is server_sock:
+            conn, addr = server_sock.accept()
+            read_sockets.append(conn)
+        else:
+            data = sock.recv(BUFFER_SIZE)
+            handle_data(sock, data, read_sockets)
+```
 
 **Keunggulan:**
-- Platform-independent
-- Efisiensi CPU lebih baik daripada sync
-- Cocok untuk aplikasi produksi dengan IO-bound workload
+- Bisa handle ratusan clients bersamaan
+- Single thread (no context switching overhead)
+- Cross-platform (Windows, Linux, macOS)
 
 ---
 
-### 4. **server-poll.py** - Poll-based Multiplexing Server (Port 5002)
+### 4. **server-poll.py** - Poll-based Server (Port 5002)
 
-Server yang menggunakan **`select.poll()`** untuk I/O multiplexing **Linux-specific**.
+Server yang menggunakan **`select.poll()`** untuk multiplexing yang lebih efisien (Linux-only).
 
-**Karakteristik:**
-- **Poll API:** Lebih efisien daripada `select()` untuk banyak file descriptor
-- **Linux Only:** Menggunakan syscall Linux, tidak tersedia di Windows
-- **Event-driven:** Hanya memproses socket yang memiliki aktivitas
+**Perbedaan dari select():**
+- `poll()` lebih scalable (O(n) vs O(n²))
+- Bisa handle ribuan clients lebih baik
+- Event mask lebih detail (POLLERR, POLLHUP, etc)
+- Hanya Linux/Unix, tidak ada di Windows
 
-**Mekanisme:**
-- `fd_to_sock`: Map file descriptor → socket object
-- `client_state`: Map fd → state dict
-- `poller.poll()`: Mengembalikan list (fd, event) yang aktif
-- Error handling: Deteksi POLLERR, POLLHUP, POLLNVAL
+**Implementasi:**
+```python
+poller = select.poll()
+poller.register(server_fd, select.POLLIN)
+
+while True:
+    events = poller.poll(1000)  # Hanya return active fds
+    
+    for fd, event in events:
+        if event & (select.POLLERR | select.POLLHUP):
+            disconnect_client(fd, poller)
+        elif fd == server_fd:
+            accept new connection
+        else:
+            handle client data
+```
 
 **Keunggulan:**
-- Scalability lebih baik (O(n) vs O(n²) untuk select)
-- Lebih cepat untuk ratusan/ribuan koneksi
-- Lebih detail dalam event handling
+- Scalable untuk 1000+ clients di single machine
+- Lebih efisien untuk high-concurrency workload
+- Standard di production Linux servers
 
 ---
 
-### 5. **server-thread.py** - Threading-based Server (Port 5003)
+### 5. **server-thread.py** - Threading Server (Port 5003)
 
-Server yang menggunakan **threading** - satu thread per klien.
+Server yang spawning **satu thread per client** untuk handling concurrent connections.
 
-**Karakteristik:**
-- **Multi-threaded:** Setiap klien mendapat thread dedicated sendiri
-- **Simplicity:** Kode sederhana dan mudah dipahami (blocking logic per thread)
-- **Thread-safe:** Menggunakan `threading.Lock()` untuk akses shared state (`clients` dict)
+**Cara kerja:**
+- Main thread accept connections
+- Untuk setiap client baru, spawn daemon thread baru
+- Thread itu run `handle_client()` yang blocking
+- Semua threads berjalan parallel (real concurrency)
 
-**Mekanisme:**
-- `clients_lock`: Proteksi akses ke dict klien yang terhubung
-- `handle_client()`: Function yang dijalankan dalam thread terpisah
-- Thread daemon: Tidak perlu explicit cleanup
-- `threading.active_count()`: Monitor jumlah thread aktif
+**Implementasi:**
+```python
+while True:
+    conn, addr = server.accept()
+    t = threading.Thread(target=handle_client, args=(conn, addr), daemon=True)
+    t.start()
+    print(f'Active threads: {threading.active_count() - 1}')
+```
 
-**Trade-offs:**
-- ✅ Mudah dipahami dan diimplementasikan
-- ✅ Baik untuk aplikasi single-machine dengan klien moderat (< 1000)
-- ❌ Context switching overhead meningkat dengan banyak thread
-- ❌ Memory per thread (~1-8MB), kurang scalable
+**Thread-safety:**
+- Semua threads share dict `clients` 
+- Perlu `threading.Lock()` untuk protect access
+- Broadcast acquire lock, copy target list, release lock
+
+```python
+clients_lock = threading.Lock()
+clients = {}
+
+def broadcast(message, sender_sock=None):
+    with clients_lock:
+        targets = list(clients.keys())
+    
+    for sock in targets:
+        if sock is sender_sock: continue
+        sock.sendall(message.encode())
+```
 
 ---
 
-## Perbandingan Pendekatan
+## Perbandingan Teknik
 
-| Pendekatan | Port | Klien Simultan | CPU Usage | Memory | Kesulitan | Best Used For |
-|---|---|---|---|---|---|---|
-| **Sync** | 5000 | 1 | Rendah | Rendah | Sangat Mudah | Learning, Demo |
-| **Select** | 5001 | 100-500 | Sedang | Rendah | Sedang | Cross-platform produksi |
-| **Poll** | 5002 | 1000+ | Rendah | Rendah | Sedang | Linux high-concurrency |
-| **Thread** | 5003 | 100-500 | Tinggi | Sedang | Mudah | Aplikasi I/O-bound |
+| Teknik | Port | Clients | CPU | Memory | Kompleksitas | Best For |
+|--------|------|---------|-----|--------|--------------|----------|
+| Sync | 5000 | 1 | ⬇️ Rendah | ⬇️ Rendah | ⬇️ Mudah | Demo/Learning |
+| Select | 5001 | 500 | ➡️ Sedang | ⬇️ Rendah | ➡️ Sedang | Prod cross-platform |
+| Poll | 5002 | 1000+ | ⬇️ Rendah | ⬇️ Rendah | ➡️ Sedang | Prod Linux |
+| Thread | 5003 | 100-500 | ⬆️ Tinggi | ➡️ Sedang | ⬇️ Mudah | I/O-heavy workload |
 
 ---
 
@@ -147,7 +214,8 @@ Server yang menggunakan **threading** - satu thread per klien.
 
 **Terminal 1 - Jalankan salah satu server:**
 ```bash
-python server-sync.py    # atau server-select.py / server-poll.py / server-thread.py
+python server-sync.py    
+# atau server-select.py / server-poll.py / server-thread.py
 ```
 
 **Terminal 2+ - Jalankan klien:**
@@ -158,11 +226,33 @@ python client.py [host] [port]
 
 **Default:**
 - Host: `127.0.0.1`
-- Port: client terhubung ke 5003, tapi bisa diatur
+- Port: client terhubung ke 5003 (thread), ganti dengan berikut untuk terhubung ke server metode lain:
+    - 5000 : sync
+    - 5001 : select
+    - 5002 : poll
+    - 5003 : thread
+
+## Tabel Perbandingan Teknis Detail
+
+| Aspek | Sync | Select | Poll | Thread |
+|-------|------|--------|------|--------|
+| **Concurrency Model** | Sequential blocking | Single-threaded multiplexing | Single-threaded multiplexing | Multi-threaded |
+| **Clients max** | 1 | ~500 | 1000+ | ~500 praktis |
+| **CPU Usage** | Rendah-Sedang | Sedang | Rendah | Tinggi |
+| **Memory per client** | Minimal | Minimal | Minimal | 1-8MB |
+| **Response time** | Lambat jika blocked | Fast dan consistent | Fast dan consistent | Variable |
+| **Context switching** | Tidak ada | Minimal | Minimal | Banyak |
+| **Platform** | Semua | Semua | Linux/Unix only | Semua |
+| **Complexity** | Mudah | Sedang | Sedang | Mudah |
+| **Scalability** | Sangat rendah | Sedang | Tinggi | Sedang |
+| **Thread-safety** | N/A | N/A | N/A | Complex |
+| **Best practice** | Learning only | Production web | Production realtime/gaming | I/O-heavy apps |
 
 ## Screenshot Hasil
 
-1. Broadcast seluruh client:
+### Thread
+
+1. Broadcast:
 
 ![alt text](images/image.png)
 
@@ -179,3 +269,33 @@ python client.py [host] [port]
 
 ![alt text](images/image-4.png)
 ![alt text](images/image-5.png)
+
+### Sync
+
+1. Broadcast
+
+![alt text](images_new/image-2.png)
+
+2. Upload
+
+![alt text](images_new/image-1.png)
+
+3. List
+
+![alt text](images_new/image-3.png)
+
+4. Download
+
+![alt text](images_new/image-4.png)
+
+5. One client close, one client open
+
+![alt text](images_new/image.png)
+
+### Select
+
+![alt text](images_new/image-5.png)
+
+### Poll
+
+![alt text](images_new/image-6.png)

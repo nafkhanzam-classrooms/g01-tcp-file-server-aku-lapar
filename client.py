@@ -13,7 +13,8 @@ import os
 import sys
 
 HOST = '127.0.0.1'
-PORT = 5003          # Change to match the server you want to connect to
+PORT = 5002
+# 5003 thread, 5001 select, 5002 poll, 5000 sync
 BUFFER_SIZE = 4096
 DOWNLOAD_DIR = 'downloads'
 
